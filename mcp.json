@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "godot-mcp": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@satelliteoflove/godot-mcp"]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+C:\Users\tekke\Documents\frontier-protocol\tests\bin\Debug\net8.0\ClickMappingTest.exe
+C:\Users\tekke\Documents\frontier-protocol\tests\bin\Debug\net8.0\ClickMappingTest.deps.json
+C:\Users\tekke\Documents\frontier-protocol\tests\bin\Debug\net8.0\ClickMappingTest.runtimeconfig.json
+C:\Users\tekke\Documents\frontier-protocol\tests\bin\Debug\net8.0\ClickMappingTest.dll
+C:\Users\tekke\Documents\frontier-protocol\tests\bin\Debug\net8.0\ClickMappingTest.pdb
+C:\Users\tekke\Documents\frontier-protocol\tests\obj\Debug\net8.0\ClickMappingTest.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\tekke\Documents\frontier-protocol\tests\obj\Debug\net8.0\ClickMappingTest.AssemblyInfoInputs.cache
+C:\Users\tekke\Documents\frontier-protocol\tests\obj\Debug\net8.0\ClickMappingTest.AssemblyInfo.cs
+C:\Users\tekke\Documents\frontier-protocol\tests\obj\Debug\net8.0\ClickMappingTest.csproj.CoreCompileInputs.cache
+C:\Users\tekke\Documents\frontier-protocol\tests\obj\Debug\net8.0\ClickMappingTest.dll
+C:\Users\tekke\Documents\frontier-protocol\tests\obj\Debug\net8.0\refint\ClickMappingTest.dll
+C:\Users\tekke\Documents\frontier-protocol\tests\obj\Debug\net8.0\ClickMappingTest.pdb
+C:\Users\tekke\Documents\frontier-protocol\tests\obj\Debug\net8.0\ClickMappingTest.genruntimeconfig.cache
+C:\Users\tekke\Documents\frontier-protocol\tests\obj\Debug\net8.0\ref\ClickMappingTest.dll

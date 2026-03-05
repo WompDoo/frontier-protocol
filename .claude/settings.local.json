@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build)",
+      "mcp__godot-mcp__godot_docs",
+      "mcp__godot-mcp__editor",
+      "Bash(powershell.exe -Command \"Get-WmiObject Win32_Process | Where-Object { $_CommandLine -like ''*godot-mcp*'' } | Stop-Process -Force\")",
+      "Bash(dotnet build --nologo)",
+      "Bash(ping -n 4 127.0.0.)",
+      "mcp__godot-mcp__input",
+      "mcp__godot-mcp__node",
+      "Bash(ping -n 3 127.0.0.)",
+      "Bash(ping -n 5 127.0.0.)",
+      "Bash(pdftotext \"c:/Users/tekke/Documents/frontier-protocol/docs/Frontier_Protocol_GDD.pdf\" -)",
+      "Bash(pdftotext \"c:/Users/tekke/Documents/frontier-protocol/docs/Frontier_Protoclol_Character_Examples_Tables.pdf\" -)",
+      "Bash(dotnet build --no-restore -v quiet)",
+      "Bash(python3 -c \":*)",
+      "Bash(powershell -Command \":*)",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File get_sizes.ps1)",
+      "WebFetch(domain:sketchfab.com)",
+      "Bash(powershell -Command \"Start-Sleep -Seconds 3\")",
+      "Bash(python3 -:*)",
+      "Bash(node -e \":*)"
+    ]
+  }
+}

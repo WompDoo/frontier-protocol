@@ -1,0 +1,63 @@
+[gd_scene format=3 uid="uid://bniyxpdgdwd04"]
+
+[ext_resource type="Script" path="res://scripts/Player.cs" id="1_player"]
+[ext_resource type="Script" path="res://scripts/ChunkManager.cs" id="2_chunks"]
+[ext_resource type="Script" path="res://scripts/DebugHUD.cs" id="3_debughud"]
+[ext_resource type="Script" path="res://scripts/StarBackground.cs" id="4_starbg"]
+[ext_resource type="Script" path="res://scripts/GlobeView.cs" id="5_globeview"]
+[ext_resource type="Script" path="res://scripts/ScoutView.cs" id="6_scoutview"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_1"]
+
+[node name="World" type="Node2D" unique_id=368901138]
+
+[node name="SpaceLayer" type="CanvasLayer" parent="." unique_id=250398688]
+layer = -10
+
+[node name="Background" type="Node2D" parent="SpaceLayer" unique_id=1550749257]
+script = ExtResource("4_starbg")
+
+[node name="ChunkManager" type="Node2D" parent="." unique_id=802193757]
+script = ExtResource("2_chunks")
+WorldSeed = null
+PlayerPath = NodePath("../YSort/Player")
+
+[node name="YSort" type="Node2D" parent="." unique_id=1125820645]
+y_sort_enabled = true
+
+[node name="Player" type="CharacterBody2D" parent="YSort" unique_id=1862975723]
+position = Vector2(0, 256)
+script = ExtResource("1_player")
+
+[node name="Visual" type="Polygon2D" parent="YSort/Player" unique_id=1492820410]
+color = Color(0.2, 0.85, 0.6, 1)
+polygon = PackedVector2Array(0, -36, 18, -18, 0, 0, -18, -18)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="YSort/Player" unique_id=1052316260]
+position = Vector2(0, -12)
+shape = SubResource("CircleShape2D_1")
+
+[node name="Camera2D" type="Camera2D" parent="YSort/Player" unique_id=963083914]
+zoom = Vector2(0.15, 0.15)
+position_smoothing_enabled = true
+position_smoothing_speed = 8.0
+
+[node name="GlobeLayer" type="CanvasLayer" parent="." unique_id=513602311]
+layer = 5
+
+[node name="GlobeView" type="Node2D" parent="GlobeLayer" unique_id=152715844]
+script = ExtResource("5_globeview")
+ChunkManagerPath = NodePath("../../ChunkManager")
+PlayerCameraPath = NodePath("../../YSort/Player/Camera2D")
+
+[node name="ScoutView" type="CanvasLayer" parent="." unique_id=1235028135]
+script = ExtResource("6_scoutview")
+ChunkManagerPath = NodePath("../ChunkManager")
+
+[node name="DebugLayer" type="CanvasLayer" parent="." unique_id=1726340189]
+layer = 10
+
+[node name="DebugHUD" type="Label" parent="DebugLayer" unique_id=287410729]
+script = ExtResource("3_debughud")
+ChunkManagerPath = NodePath("../../ChunkManager")
+PlayerPath = NodePath("../../YSort/Player")
