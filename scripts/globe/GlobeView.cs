@@ -10,6 +10,12 @@ using System.Collections.Generic;
 /// </summary>
 public partial class GlobeView : Node2D
 {
+	/// <summary>Emitted when the player clicks "Deploy" in a cell panel. lonIdx/latIdx are grid cell indices.</summary>
+	[Signal] public delegate void DeployRequestedEventHandler(int lonIdx, int latIdx);
+
+	/// <summary>Emitted when the player selects a landing site on first launch.</summary>
+	[Signal] public delegate void LandingSiteChosenEventHandler(int lonIdx, int latIdx);
+
 	[Export] public NodePath ChunkManagerPath { get; set; }
 	[Export] public NodePath PlayerCameraPath  { get; set; }
 
@@ -23,8 +29,7 @@ public partial class GlobeView : Node2D
 	private SubViewport    _subViewport;
 	private TextureRect    _display;
 	private MeshInstance3D _sphere;
-	private MeshInstance3D _cloudSphere;        // outer cloud layer  (r=1.10) — storms + cyclones
-	private MeshInstance3D _cloudSphereInner;   // inner cloud layer  (r=1.06) — base stratocumulus
+	private MeshInstance3D _cloudSphere;        // cloud layer (r=1.10) — storms + cyclones
 	private MeshInstance3D _gridSphere;   // separate layer — not baked into terrain
 	private Node3D         _globeRoot;
 	private StarField      _starField;
@@ -53,6 +58,7 @@ public partial class GlobeView : Node2D
 	private bool  _clickWasDrag  = false;
 	private Vector2 _clickStart  = Vector2.Zero;
 	private bool  _debugGrid     = false;
+	private bool  _gridReady     = false;
 	private int   _lastSeed      = -1;
 	private float _rotVelocity   = AutoRotSpeed;
 	private float _dragVelocity  = 0f;
@@ -62,7 +68,15 @@ public partial class GlobeView : Node2D
 	private int   _selCellGj    = -1;
 	private bool  _snapToTarget = false;
 	private float _targetYRot   = 0f;
+	private float _targetXRot   = 0f;
 	private float _zoomTarget   = GlobeZoomMax;
+
+	// ── Landing site selection ────────────────────────────────────────────────
+	private bool            _landingMode       = false;
+	private List<Vector2I>  _landingCandidates = [];
+	private int             _candidateIdx      = 0;
+	private CanvasLayer?    _landingBanner;
+	private Label?          _landingInstrLabel;
 
 	// ── Grid cell data ─────────────────────────────────────────────────────────
 
@@ -77,6 +91,12 @@ public partial class GlobeView : Node2D
 
 	private GridCellData[,] _gridData = new GridCellData[GridDivLon, GridDivLat];
 
+	// ── River data ─────────────────────────────────────────────────────────────
+
+	private struct RiverCell { public bool HasRiver; public int EntrySide; public int ExitSide; }
+	private RiverCell[,] _riverData  = new RiverCell[GridDivLon, GridDivLat];
+	private bool         _riversReady;
+
 	public GridCellData? GetGridCell(int lonIdx, int latIdx)
 	{
 		if (lonIdx < 0 || lonIdx >= GridDivLon || latIdx < 0 || latIdx >= GridDivLat) return null;
@@ -87,6 +107,7 @@ public partial class GlobeView : Node2D
 
 	private CanvasLayer? _cellLayer;
 	private Panel?       _cellCard;
+	private Button?      _deployBtn;
 	private Label?       _cellTitle;
 	private Label?       _cellBiome;
 	private Label?       _cellElev;
@@ -113,6 +134,7 @@ public partial class GlobeView : Node2D
 
 		BuildScene();
 		BuildCellPanel();
+		BuildLandingBanner();
 		LoadPalettes();
 		BuildDebugSliders();
 		GenerateGlobeTexture();
@@ -179,11 +201,7 @@ public partial class GlobeView : Node2D
 		_cloudSphere.SetSurfaceOverrideMaterial(0, new ShaderMaterial { Shader = new Shader { Code = CloudShaderCode } });
 		_globeRoot.AddChild(_cloudSphere);
 
-		// Inner cloud shell — base stratocumulus layer, denser / slightly darker undersides
-		_cloudSphereInner      = new MeshInstance3D();
-		_cloudSphereInner.Mesh = new SphereMesh { Radius = 1.06f, Height = 2.12f, RadialSegments = 64, Rings = 32 };
-		_cloudSphereInner.SetSurfaceOverrideMaterial(0, new ShaderMaterial { Shader = new Shader { Code = CloudInnerShaderCode } });
-		_globeRoot.AddChild(_cloudSphereInner);
+		// (inner cloud shell removed — combined into outer shader for performance)
 
 		// Grid sphere — additive overlay, separate from terrain, toggled by F1
 		_gridSphere         = new MeshInstance3D();
@@ -282,8 +300,12 @@ public partial class GlobeView : Node2D
 		if (_snapToTarget)
 		{
 			// Smoothly rotate globe to face selected cell and zoom in
-			float diff = Mathf.Wrap(_targetYRot - _globeRoot.Rotation.Y, -Mathf.Pi, Mathf.Pi);
-			_globeRoot.Rotation = new Vector3(0f, _globeRoot.Rotation.Y + diff * (float)delta * 3.0f, 0f);
+			float diffY = Mathf.Wrap(_targetYRot - _globeRoot.Rotation.Y, -Mathf.Pi, Mathf.Pi);
+			float diffX = _targetXRot - _globeRoot.Rotation.X;
+			_globeRoot.Rotation = new Vector3(
+				_globeRoot.Rotation.X + diffX * (float)delta * 3.0f,
+				_globeRoot.Rotation.Y + diffY * (float)delta * 3.0f,
+				0f);
 			float cz = Mathf.Lerp(_camera3D.Position.Z, _zoomTarget, (float)delta * 2.5f);
 			_camera3D.Position = new Vector3(0f, 0f, cz);
 			_rotVelocity  = 0f;
@@ -301,18 +323,18 @@ public partial class GlobeView : Node2D
 		{
 			_globeRoot.RotateY(_rotVelocity * (float)delta);
 			_cloudSphere.RotateY(CloudDriftRel * (float)delta);
+			// Drift X tilt back to 0 when not snapped to a cell
+			if (Mathf.Abs(_globeRoot.Rotation.X) > 0.001f)
+				_globeRoot.Rotation = new Vector3(
+					Mathf.Lerp(_globeRoot.Rotation.X, 0f, (float)delta * 2f),
+					_globeRoot.Rotation.Y, 0f);
 		}
 
-		// Clouds stay fully visible until Z=2.0, then fade over the last stretch to min zoom
-		float zFrac2      = Mathf.Clamp(Mathf.InverseLerp(2.0f, GlobeZoomMin, _camera3D.Position.Z), 0f, 1f);
-		float cloudAlpha2 = 1f - zFrac2 * zFrac2;   // quadratic: gentle fade start, quick at close
+		// Clouds fade as soon as the user zooms in; fully gone by Z=1.8
+		float zFrac2      = Mathf.Clamp(Mathf.InverseLerp(3.2f, 1.8f, _camera3D.Position.Z), 0f, 1f);
+		float cloudAlpha2 = 1f - zFrac2 * zFrac2;   // quadratic ease-out
 		if (_cloudSphere.GetActiveMaterial(0) is ShaderMaterial cloudMat)
 			cloudMat.SetShaderParameter("cloud_alpha_scale", cloudAlpha2);
-		if (_cloudSphereInner.GetActiveMaterial(0) is ShaderMaterial cloudMatI)
-		{
-			_cloudSphereInner.RotateY(CloudDriftRel * 1.35f * (float)delta);   // inner layer drifts faster
-			cloudMatI.SetShaderParameter("cloud_alpha_scale", cloudAlpha2 * 0.60f);
-		}
 	}
 
 	// ── Grid cell click — ray-sphere intersection ─────────────────────────────
@@ -357,12 +379,17 @@ public partial class GlobeView : Node2D
 		int gi = Mathf.Clamp((int)(u * GridDivLon), 0, GridDivLon - 1);
 		int gj = Mathf.Clamp((int)(v * GridDivLat), 0, GridDivLat - 1);
 
+		// In landing mode, only candidate cells are interactive
+		if (_landingMode && !_landingCandidates.Contains(new Vector2I(gi, gj)))
+			return;
+
 		// Stop rotation, zoom in to show the selected region.
 		// phi_world = phi_local + Rotation.Y → to face camera (phi_world=0): Rotation.Y = -phi_local
 		_selCellGi    = gi;
 		_selCellGj    = gj;
 		_snapToTarget = true;
 		_targetYRot   = -phi;
+		_targetXRot   = lat;   // tilt globe so clicked latitude is vertically centered
 		_zoomTarget   = 2.0f;
 		UpdateGridSelection();
 		ShowCellPanel(gi, gj);
@@ -457,6 +484,42 @@ public partial class GlobeView : Node2D
 		_cellCard.AddChild(_cellHazard);
 		py += 36;
 
+		// Deploy button — primary CTA; text and signal change depending on landing mode
+		_deployBtn = new Button
+		{
+			Text              = "DEPLOY SCOUTS",
+			Position          = new Vector2(px, cardH - 50),
+			CustomMinimumSize = new Vector2(180, 32),
+		};
+		var deployStyle = new StyleBoxFlat
+		{
+			BgColor             = new Color(0.10f, 0.55f, 0.20f),
+			BorderColor         = new Color(0.20f, 0.85f, 0.35f),
+			BorderWidthLeft     = 1, BorderWidthRight  = 1,
+			BorderWidthTop      = 1, BorderWidthBottom = 1,
+			CornerRadiusTopLeft = 4, CornerRadiusTopRight    = 4,
+			CornerRadiusBottomLeft = 4, CornerRadiusBottomRight = 4,
+		};
+		_deployBtn.AddThemeStyleboxOverride("normal", deployStyle);
+		_deployBtn.AddThemeColorOverride("font_color", new Color(0.90f, 1.0f, 0.90f));
+		_deployBtn.Pressed += () =>
+		{
+			// Capture indices before HideCellPanel clears them to -1
+			int gi = _selCellGi, gj = _selCellGj;
+			if (_landingMode)
+			{
+				StopLandingSiteSelection();
+				HideCellPanel();
+				EmitSignal(SignalName.LandingSiteChosen, gi, gj);
+			}
+			else
+			{
+				HideCellPanel();
+				EmitSignal(SignalName.DeployRequested, gi, gj);
+			}
+		};
+		_cellCard.AddChild(_deployBtn);
+
 		// Close button
 		var closeBtn = new Button
 		{
@@ -468,7 +531,7 @@ public partial class GlobeView : Node2D
 		_cellCard.AddChild(closeBtn);
 
 		// Hint
-		var hint = CLabel("Click grid line or press Esc to close", px, cardH - 38, 11, CellSubtle);
+		var hint = CLabel("DEPLOY to land scouts · Esc to close", px, cardH - 16, 11, CellSubtle);
 		hint.Size = new Vector2(cardW - 150, 20);
 		_cellCard.AddChild(hint);
 	}
@@ -524,6 +587,41 @@ public partial class GlobeView : Node2D
 				hazard >= 5 ? CellDanger : hazard >= 4 ? new Color(1f, 0.6f, 0.2f) : CellGreen);
 		}
 
+		// Adapt deploy button for landing mode
+		if (_deployBtn is not null)
+		{
+			if (_landingMode)
+			{
+				_deployBtn.Text = "CHOOSE THIS SITE";
+				var s = new StyleBoxFlat
+				{
+					BgColor        = new Color(0.55f, 0.40f, 0.05f),
+					BorderColor    = new Color(1.00f, 0.72f, 0.08f),
+					BorderWidthLeft = 1, BorderWidthRight  = 1,
+					BorderWidthTop  = 1, BorderWidthBottom = 1,
+					CornerRadiusTopLeft = 4, CornerRadiusTopRight    = 4,
+					CornerRadiusBottomLeft = 4, CornerRadiusBottomRight = 4,
+				};
+				_deployBtn.AddThemeStyleboxOverride("normal", s);
+				_deployBtn.AddThemeColorOverride("font_color", new Color(1.00f, 0.92f, 0.60f));
+			}
+			else
+			{
+				_deployBtn.Text = "DEPLOY SCOUTS";
+				var s = new StyleBoxFlat
+				{
+					BgColor        = new Color(0.10f, 0.55f, 0.20f),
+					BorderColor    = new Color(0.20f, 0.85f, 0.35f),
+					BorderWidthLeft = 1, BorderWidthRight  = 1,
+					BorderWidthTop  = 1, BorderWidthBottom = 1,
+					CornerRadiusTopLeft = 4, CornerRadiusTopRight    = 4,
+					CornerRadiusBottomLeft = 4, CornerRadiusBottomRight = 4,
+				};
+				_deployBtn.AddThemeStyleboxOverride("normal", s);
+				_deployBtn.AddThemeColorOverride("font_color", new Color(0.90f, 1.0f, 0.90f));
+			}
+		}
+
 		_cellLayer.Visible = true;
 	}
 
@@ -531,6 +629,7 @@ public partial class GlobeView : Node2D
 	{
 		if (_cellLayer is not null) _cellLayer.Visible = false;
 		_snapToTarget = false;
+		_targetXRot   = 0f;
 		_selCellGi    = -1;
 		_selCellGj    = -1;
 		UpdateGridSelection();
@@ -549,6 +648,217 @@ public partial class GlobeView : Node2D
 			pMat.SetShaderParameter("sel_gi", _selCellGi);
 			pMat.SetShaderParameter("sel_gj", _selCellGj);
 		}
+	}
+
+	// ── Landing site selection ────────────────────────────────────────────────
+
+	/// <summary>
+	/// Activates landing site selection mode. Shows 3 candidate cells as amber glows
+	/// on the globe with no grid lines. Player navigates with Prev/Next and confirms
+	/// via the cell panel. Call from WorldScene when no home base has been chosen yet.
+	/// </summary>
+	public void StartLandingSiteSelection()
+	{
+		_landingCandidates = FindLandingCandidates();
+		_landingMode       = true;
+		_candidateIdx      = 0;
+
+		// Show grid sphere for candidate glow, but hide all regular grid lines
+		_gridSphere.Visible = true;
+		if (_gridSphere.GetActiveMaterial(0) is ShaderMaterial mat)
+			mat.SetShaderParameter("lines_enabled", false);
+
+		UpdateCandidateHighlights();
+		UpdateLandingBannerLabel();
+
+		if (_landingBanner is not null)
+			_landingBanner.Visible = true;
+
+		// Snap globe to the first candidate immediately
+		if (_landingCandidates.Count > 0)
+			SnapToCandidate(0);
+	}
+
+	private void StopLandingSiteSelection()
+	{
+		_landingMode = false;
+		_landingCandidates.Clear();
+		UpdateCandidateHighlights();
+
+		// Restore grid sphere to normal F1 state
+		_gridSphere.Visible = _debugGrid;
+		if (_gridSphere.GetActiveMaterial(0) is ShaderMaterial mat)
+			mat.SetShaderParameter("lines_enabled", true);
+
+		if (_landingBanner is not null) _landingBanner.Visible = false;
+	}
+
+	/// <summary>Snaps the globe to face candidate at index and opens its cell panel.</summary>
+	private void SnapToCandidate(int idx)
+	{
+		if (idx < 0 || idx >= _landingCandidates.Count) return;
+		var c = _landingCandidates[idx];
+
+		// Compute world-space longitude angle for this grid cell
+		float u      = (c.X + 0.5f) / GridDivLon;
+		float phi    = Mathf.Wrap(u * Mathf.Tau, -Mathf.Pi, Mathf.Pi);   // -π..+π, matches TryClickGridCell
+		float latDeg = 90f - (c.Y + 0.5f) / GridDivLat * 180f;
+		float latRad = latDeg * Mathf.Pi / 180f;
+
+		_selCellGi    = c.X;
+		_selCellGj    = c.Y;
+		_snapToTarget = true;
+		_targetYRot   = -phi;
+		_targetXRot   = latRad;
+		_zoomTarget   = 2.2f;
+		UpdateGridSelection();
+		ShowCellPanel(c.X, c.Y);
+	}
+
+	/// <summary>Updates the "Site N of 3 — Biome" label in the landing banner.</summary>
+	private void UpdateLandingBannerLabel()
+	{
+		if (_landingInstrLabel is null || _landingCandidates.Count == 0) return;
+		var c    = _landingCandidates[_candidateIdx];
+		var cell = _gridData[c.X, c.Y];
+		float lonDeg = (c.X + 0.5f) / GridDivLon * 360f - 180f;
+		float latDeg = 90f - (c.Y + 0.5f) / GridDivLat * 180f;
+		string ns = latDeg >= 0 ? "N" : "S";
+		string ew = lonDeg >= 0 ? "E" : "W";
+		_landingInstrLabel.Text =
+			$"CHOOSE YOUR LANDING SITE  ·  Site {_candidateIdx + 1} of {_landingCandidates.Count}" +
+			$"  ·  {BiomeName(cell.DominantBiome)}" +
+			$"  ·  {Mathf.Abs(latDeg):F0}°{ns}  {Mathf.Abs(lonDeg):F0}°{ew}" +
+			"     ◀ PREV  /  NEXT ▶  to cycle  ·  Click the glowing cell to select";
+	}
+
+	/// <summary>Builds the instruction banner shown during landing site selection.</summary>
+	private void BuildLandingBanner()
+	{
+		var vp = GetViewport().GetVisibleRect().Size;
+
+		_landingBanner         = new CanvasLayer();
+		_landingBanner.Layer   = 9;
+		_landingBanner.Visible = false;
+		AddChild(_landingBanner);
+
+		var panel      = new Panel();
+		var panelStyle = new StyleBoxFlat
+		{
+			BgColor           = new Color(0.04f, 0.05f, 0.10f, 0.92f),
+			BorderColor       = new Color(0.85f, 0.65f, 0.10f, 1.0f),
+			BorderWidthBottom = 2,
+		};
+		panel.AddThemeStyleboxOverride("panel", panelStyle);
+		panel.Position = Vector2.Zero;
+		panel.Size     = new Vector2(vp.X, 50f);
+		_landingBanner.AddChild(panel);
+
+		// Prev button
+		var prevBtn = new Button { Text = "◀  PREV", Position = new Vector2(14f, 9f), CustomMinimumSize = new Vector2(90f, 30f) };
+		prevBtn.Pressed += () =>
+		{
+			if (!_landingMode || _landingCandidates.Count == 0) return;
+			_candidateIdx = (_candidateIdx + _landingCandidates.Count - 1) % _landingCandidates.Count;
+			UpdateLandingBannerLabel();
+			SnapToCandidate(_candidateIdx);
+		};
+		panel.AddChild(prevBtn);
+
+		// Next button
+		var nextBtn = new Button { Text = "NEXT  ▶", Position = new Vector2(112f, 9f), CustomMinimumSize = new Vector2(90f, 30f) };
+		nextBtn.Pressed += () =>
+		{
+			if (!_landingMode || _landingCandidates.Count == 0) return;
+			_candidateIdx = (_candidateIdx + 1) % _landingCandidates.Count;
+			UpdateLandingBannerLabel();
+			SnapToCandidate(_candidateIdx);
+		};
+		panel.AddChild(nextBtn);
+
+		// Info label — sits to the right of the buttons
+		_landingInstrLabel = new Label
+		{
+			Position     = new Vector2(218f, 12f),
+			Size         = new Vector2(vp.X - 230f, 30f),
+			AutowrapMode = TextServer.AutowrapMode.Off,
+		};
+		_landingInstrLabel.AddThemeFontSizeOverride("font_size", 13);
+		_landingInstrLabel.AddThemeColorOverride("font_color", new Color(0.92f, 0.80f, 0.30f));
+		panel.AddChild(_landingInstrLabel);
+	}
+
+	/// <summary>Pushes candidate cell positions to the grid shader as amber highlights.</summary>
+	private void UpdateCandidateHighlights()
+	{
+		if (_gridSphere?.GetActiveMaterial(0) is not ShaderMaterial mat) return;
+
+		for (int k = 0; k < 3; k++)
+		{
+			bool valid = k < _landingCandidates.Count;
+			mat.SetShaderParameter($"cand{k}_gi", valid ? _landingCandidates[k].X : -1);
+			mat.SetShaderParameter($"cand{k}_gj", valid ? _landingCandidates[k].Y : -1);
+		}
+	}
+
+	/// <summary>
+	/// Returns 3 candidate landing sites spread across the planet's longitude.
+	/// Prefers habitable mid-latitude cells and biome diversity across the three sites.
+	/// Avoids ocean, mountain, and arctic biomes.
+	/// </summary>
+	private List<Vector2I> FindLandingCandidates()
+	{
+		if (!_gridReady) return [];
+
+		var rng  = new System.Random(_chunkManager.WorldSeed ^ unchecked((int)0xDEADBEEF));
+		var pool = new List<Vector2I>();
+
+		for (int gi = 0; gi < GridDivLon; gi++)
+		for (int gj = 2; gj < GridDivLat - 2; gj++)    // avoid extreme poles
+		{
+			var b = _gridData[gi, gj].DominantBiome;
+			if (b is BiomeType.Ocean or BiomeType.DeepOcean or BiomeType.Coastal
+			      or BiomeType.Mountain or BiomeType.Arctic)
+				continue;
+
+			// Also verify the actual centre chunk is land (globe dominant biome can straddle coasts)
+			int cx = gi * 10 + 5;
+			int cy = Mathf.Clamp(gj * 10 - 45, -60, 59);
+			var actual = GetBiomeForChunk(cx, cy);
+			if (actual is BiomeType.Ocean or BiomeType.DeepOcean or BiomeType.Coastal)
+				continue;
+
+			pool.Add(new Vector2I(gi, gj));
+		}
+
+		// Pick one from each longitude third, preferring a biome not yet represented
+		var result       = new List<Vector2I>(3);
+		var usedBiomes   = new HashSet<BiomeType>();
+		int third        = GridDivLon / 3;   // 8 cells per third
+
+		for (int t = 0; t < 3; t++)
+		{
+			var slice = pool.FindAll(v => v.X >= t * third && v.X < (t + 1) * third);
+			if (slice.Count == 0) continue;
+
+			// Prefer a cell whose biome hasn't been used yet
+			var fresh = slice.FindAll(v => !usedBiomes.Contains(_gridData[v.X, v.Y].DominantBiome));
+			var pick  = fresh.Count > 0
+				? fresh[rng.Next(fresh.Count)]
+				: slice[rng.Next(slice.Count)];
+
+			result.Add(pick);
+			usedBiomes.Add(_gridData[pick.X, pick.Y].DominantBiome);
+		}
+
+		// Pad to 3 if any longitude third was empty (very ocean-heavy planet)
+		foreach (var v in pool)
+		{
+			if (result.Count >= 3) break;
+			if (!result.Contains(v)) result.Add(v);
+		}
+
+		return result;
 	}
 
 	// ── Region data derivation ────────────────────────────────────────────────
@@ -853,8 +1163,162 @@ public partial class GlobeView : Node2D
 		}
 		if (_cloudSphere.GetActiveMaterial(0) is ShaderMaterial cMat)
 			cMat.SetShaderParameter("seed_offset", (float)(seed % 1000) / 10f);
-		if (_cloudSphereInner.GetActiveMaterial(0) is ShaderMaterial cMatI)
-			cMatI.SetShaderParameter("seed_offset", (float)((seed ^ 0xABCD) % 1000) / 10f);
+
+		TraceRivers(seed);
+		_gridReady = true;
+	}
+
+	// ── Biome lookup for isometric world ──────────────────────────────────────
+
+	/// <summary>
+	/// Returns the globe's dominant biome for a given world chunk coordinate, or null if
+	/// the globe texture has not yet been generated. Used by ChunkManager to sync overworld
+	/// biomes with the globe view — bypasses ChunkGenerator's independent noise.
+	/// </summary>
+	public BiomeType? GetBiomeForChunk(int chunkX, int chunkY)
+	{
+		if (!_gridReady) return null;
+		return ChunkGenerator.GetBiome(
+			new Vector2I(chunkX, chunkY), _chunkManager.Seed, _chunkManager.Planet);
+	}
+
+	// ── River tracing ─────────────────────────────────────────────────────────
+
+	/// <summary>
+	/// Traces planetary river networks after globe texture generation.
+	/// Sources = mountain/highland cells. Rivers flow downhill until reaching ocean
+	/// or biomes that don't sustain rivers (desert, arctic).
+	/// </summary>
+	private void TraceRivers(int seed)
+	{
+		_riverData   = new RiverCell[GridDivLon, GridDivLat];
+		_riversReady = false;
+
+		var rng = new System.Random(seed ^ 0x52495645);
+
+		// Collect source candidates
+		var sources = new List<(int gi, int gj)>();
+		for (int gi = 0; gi < GridDivLon; gi++)
+		for (int gj = 1; gj < GridDivLat - 1; gj++)
+		{
+			var cell = _gridData[gi, gj];
+			if (cell.HasOcean) continue;
+			if (cell.DominantBiome is BiomeType.Desert or BiomeType.Arctic) continue;
+			if (cell.HasMountains || cell.AvgElevation > 0.60f)
+				sources.Add((gi, gj));
+		}
+
+		// Fisher-Yates shuffle for determinism
+		for (int i = sources.Count - 1; i > 0; i--)
+		{
+			int j = rng.Next(i + 1);
+			(sources[i], sources[j]) = (sources[j], sources[i]);
+		}
+
+		int nRivers = Mathf.Clamp(sources.Count * 2 / 5, 3, 25);
+		for (int s = 0; s < Mathf.Min(nRivers, sources.Count); s++)
+			TraceOneRiver(sources[s].gi, sources[s].gj);
+
+		_riversReady = true;
+	}
+
+	private void TraceOneRiver(int gi, int gj)
+	{
+		int  entrySide = -1;  // -1 = spring source
+		var  visited   = new bool[GridDivLon, GridDivLat];
+
+		while (true)
+		{
+			if (gj < 0 || gj >= GridDivLat) break;
+			if (visited[gi, gj]) break;             // cycle guard
+			if (_riverData[gi, gj].HasRiver) break; // confluence with existing river
+			visited[gi, gj] = true;
+
+			var cur = _gridData[gi, gj];
+
+			// Find the lowest cardinal neighbour
+			int   bestDir  = -1;
+			float bestElev = cur.AvgElevation;
+			for (int d = 0; d < 4; d++)
+			{
+				(int ngi, int ngj) = RiverStep(gi, gj, d);
+				if (ngj < 0 || ngj >= GridDivLat) continue;
+				if (_gridData[ngi, ngj].AvgElevation < bestElev)
+				{
+					bestElev = _gridData[ngi, ngj].AvgElevation;
+					bestDir  = d;
+				}
+			}
+			if (bestDir == -1) break; // local minimum — endorheic basin, no outlet
+
+			_riverData[gi, gj] = new RiverCell { HasRiver = true, EntrySide = entrySide, ExitSide = bestDir };
+
+			(int ngi2, int ngj2) = RiverStep(gi, gj, bestDir);
+			if (ngj2 < 0 || ngj2 >= GridDivLat) break;
+
+			var next = _gridData[ngi2, ngj2];
+			// River drains into ocean, desert, or arctic — stop here
+			if (next.HasOcean
+			 || next.DominantBiome is BiomeType.Ocean or BiomeType.DeepOcean
+			 || next.DominantBiome is BiomeType.Desert or BiomeType.Arctic)
+				break;
+
+			entrySide = RiverOppSide(bestDir);
+			gi = ngi2; gj = ngj2;
+		}
+	}
+
+	private static (int gi, int gj) RiverStep(int gi, int gj, int dir) => dir switch
+	{
+		0 => (gi,                            gj - 1),  // North
+		1 => ((gi + 1) % GridDivLon,         gj),      // East (wraps)
+		2 => (gi,                            gj + 1),  // South
+		_ => ((gi + GridDivLon - 1) % GridDivLon, gj), // West (wraps)
+	};
+
+	private static int RiverOppSide(int d) => (d + 2) % 4;
+
+	/// <summary>
+	/// Returns river crossing data for a chunk, or null if no globe-traced river
+	/// passes through it. The chunk is "on" the river when its centre lies within
+	/// 0.75 chunk-widths of the river centreline for its globe cell.
+	/// </summary>
+	public RiverCrossing? GetRiverCrossing(int chunkX, int chunkY)
+	{
+		if (!_riversReady) return null;
+
+		int gi  = Mathf.Clamp(ChunkGenerator.NormX(chunkX) / 10, 0, GridDivLon - 1);
+		int gj  = Mathf.Clamp((chunkY + 55) / 10,               0, GridDivLat - 1);
+		var rc  = _riverData[gi, gj];
+		if (!rc.HasRiver) return null;
+
+		// Local position of this chunk within the 10×10 cell grid (0-9)
+		int lcx = ChunkGenerator.NormX(chunkX) - gi * 10;
+		int lcy = chunkY - (gj * 10 - 55);
+		if (lcx < 0 || lcx > 9 || lcy < 0 || lcy > 9) return null;
+
+		// River line in 0-10 local space: entry midpoint → exit midpoint
+		static Vector2 SideMid(int side) => side switch
+		{
+			0 => new Vector2(4.5f, 0f),    // North
+			1 => new Vector2(10f,  4.5f),  // East
+			2 => new Vector2(4.5f, 10f),   // South
+			3 => new Vector2(0f,   4.5f),  // West
+			_ => new Vector2(4.5f, 4.5f),  // source (-1) → centre
+		};
+
+		var entryPt = SideMid(rc.EntrySide);
+		var exitPt  = SideMid(rc.ExitSide);
+		var centre  = new Vector2(lcx + 0.5f, lcy + 0.5f);
+
+		// Distance from chunk centre to river line segment
+		var  ab   = exitPt - entryPt;
+		float lsq = ab.LengthSquared();
+		float t   = lsq < 1e-6f ? 0f : Mathf.Clamp((centre - entryPt).Dot(ab) / lsq, 0f, 1f);
+		float dist = (centre - (entryPt + ab * t)).Length();
+		if (dist > 0.75f) return null;
+
+		return new RiverCrossing { EntrySide = rc.EntrySide, ExitSide = rc.ExitSide };
 	}
 
 	// ── Planet shader ─────────────────────────────────────────────────────────
@@ -1009,7 +1473,7 @@ float gnoise(vec3 p) {
 }
 float fbm(vec3 p) {
 	float v=0.0,a=0.5;
-	for(int i=0;i<5;i++){v+=a*gnoise(p);p*=2.0;a*=0.5;}
+	for(int i=0;i<4;i++){v+=a*gnoise(p);p*=2.0;a*=0.5;}
 	return v*0.5+0.5;
 }
 
@@ -1056,25 +1520,18 @@ void fragment() {
 	vec2 c3 = vec2(mod(3.50 + sd * 0.13 - t * 0.004, 6.283) - 3.14159,  0.26 + sin(sd * 0.7)  * 0.14);
 
 	// Accumulate vortex warps scaled by activity; S hemisphere storm spins reversed
-	vec2 cw = vortexWarp(lat, lon, c1,  t * 3.0, 0.42,  1.0) * a1
-	        + vortexWarp(lat, lon, c2, -t * 2.5, 0.38, -1.0) * a2
-	        + vortexWarp(lat, lon, c3,  t * 2.0, 0.35,  1.0) * a3;
+	vec2 cw = vortexWarp(lat, lon, c1,  t * 1.2, 0.42,  1.0) * a1
+	        + vortexWarp(lat, lon, c2, -t * 1.0, 0.38, -1.0) * a2
+	        + vortexWarp(lat, lon, c3,  t * 0.8, 0.35,  1.0) * a3;
 
 	// Reconstruct warped sphere position for FBM sampling
 	float wLat = clamp(lat + cw.x, -1.57, 1.57);
 	float wLon = lon + cw.y;
 	vec3  wp   = vec3(cos(wLat) * sin(wLon), sin(wLat), cos(wLat) * cos(wLon));
 
-	// Domain warp for global atmospheric shapes
-	vec3 sp = wp * 1.55;
-	vec3 domWarp = vec3(
-		gnoise(sp + vec3(t * 0.40, 0.0,    t * 0.25)),
-		gnoise(sp + vec3(0.0,    t * 0.35, t * 0.50)),
-		gnoise(sp + vec3(t * 0.20, t * 0.45, 0.0))
-	);
-	float big  = fbm(wp * 1.20 + domWarp * 0.28 + vec3(t * 0.5, t * 0.2, t * 0.3));
-	float fine = fbm(wp * 3.50 + vec3(t * 0.9, t * 0.6, t * 1.1));
-	float n    = big * 0.70 + fine * 0.30;
+	// Single domain-warp gnoise — bends cloud bands into swirling shapes
+	float dw = gnoise(wp * 1.55 + vec3(t * 0.40, t * 0.25, t * 0.35));
+	float n  = fbm(wp * 1.40 + dw * 0.22 + vec3(t * 0.5, t * 0.2, t * 0.3));
 
 	// Calm eye: small clear disc at the centre of each active storm
 	float r1 = length(vec2(mod(lon - c1.x + 3.14159, 6.28318) - 3.14159, lat - c1.y));
@@ -1087,8 +1544,8 @@ void fragment() {
 	n = clamp(n * eye1 * eye2 * eye3, 0.0, 1.0);
 
 	// Sharp cloud edge profile — more defined, less wispy
-	float nSharp = smoothstep(0.46, 0.82, n);
-	float alpha  = nSharp * 0.88 * cloud_alpha_scale;
+	float nSharp = smoothstep(0.52, 0.84, n);  // narrower band = less global coverage
+	float alpha  = nSharp * 0.58 * cloud_alpha_scale;  // lighter opacity — terrain shows through
 
 	// Limb fade — clouds go transparent toward the horizon; prevents dark edge ring
 	float facing = clamp(dot(NORMAL, VIEW), 0.0, 1.0);
@@ -1099,11 +1556,8 @@ void fragment() {
 	float edgeShade = smoothstep(0.46, 0.78, n);
 	float brightness = mix(0.80, topLight, edgeShade);
 
-	// Puffiness pass 2: high-frequency cauliflower texture on cloud tops
-	// Samples noise at 7× the base frequency to create surface knobble texture
-	float cauli    = fbm(sphere_pos * 7.0 + vec3(t * 1.2, t * 0.7, t * 1.0)) * 0.5 + 0.5;
-	float cauliFac = edgeShade * facing * 0.30;   // only on dense-top visible areas
-	brightness     = brightness * (1.0 - cauliFac) + (brightness * mix(0.82, 1.08, cauli)) * cauliFac;
+	// Subtle brightness variation from existing noise — no extra FBM call
+	brightness *= mix(0.93, 1.05, edgeShade * facing);
 
 	ALBEDO    = vec3(clamp(brightness, 0.0, 1.0), clamp(brightness, 0.0, 1.0), clamp(brightness * 0.97, 0.0, 1.0));
 	ALPHA     = alpha;
@@ -1112,60 +1566,6 @@ void fragment() {
 }
 ";
 
-	// ── Inner cloud layer — base stratocumulus, no cyclones, slightly grey undersides ──
-
-	private const string CloudInnerShaderCode = @"
-shader_type spatial;
-render_mode cull_back, blend_mix;
-
-uniform float seed_offset       = 0.0;
-uniform float cloud_alpha_scale : hint_range(0.0, 1.0) = 1.0;
-
-varying vec3 sphere_pos;
-
-void vertex() { sphere_pos = VERTEX; }
-
-vec3 ghash(vec3 p) {
-	vec3 h = fract(sin(vec3(dot(p,vec3(127.1,311.7,74.7)),
-	                        dot(p,vec3(269.5,183.3,246.1)),
-	                        dot(p,vec3(113.5,271.9,124.6)))) * 43758.5453);
-	return normalize(h * 2.0 - 1.0);
-}
-float gnoise(vec3 p) {
-	vec3 i=floor(p); vec3 f=fract(p);
-	vec3 u=f*f*f*(f*(f*6.0-15.0)+10.0);
-	return 2.0*mix(mix(mix(dot(ghash(i),f),dot(ghash(i+vec3(1,0,0)),f-vec3(1,0,0)),u.x),
-	                   mix(dot(ghash(i+vec3(0,1,0)),f-vec3(0,1,0)),dot(ghash(i+vec3(1,1,0)),f-vec3(1,1,0)),u.x),u.y),
-	               mix(mix(dot(ghash(i+vec3(0,0,1)),f-vec3(0,0,1)),dot(ghash(i+vec3(1,0,1)),f-vec3(1,0,1)),u.x),
-	                   mix(dot(ghash(i+vec3(0,1,1)),f-vec3(0,1,1)),dot(ghash(i+vec3(1,1,1)),f-vec3(1,1,1)),u.x),u.y),u.z);
-}
-float fbm(vec3 p) {
-	float v=0.0,a=0.5;
-	for(int i=0;i<5;i++){v+=a*gnoise(p);p*=2.0;a*=0.5;}
-	return v*0.5+0.5;
-}
-
-void fragment() {
-	float t = TIME * 0.016 + seed_offset;
-	float n = fbm(sphere_pos * 1.65 + vec3(t * 0.7, t * 0.4, t * 0.6));
-
-	float alpha = clamp((n - 0.56) * 4.0, 0.0, 0.50) * cloud_alpha_scale;
-
-	// Limb fade — kills the dark edge ring
-	float facing = clamp(dot(NORMAL, VIEW), 0.0, 1.0);
-	alpha *= smoothstep(0.0, 0.28, facing);
-
-	// Undersides are slightly grey (outer layer above blocks direct light)
-	float shade      = mix(0.70, 0.92, facing);
-	float density    = smoothstep(0.56, 0.78, n);
-	float brightness = mix(shade, 0.93, density);
-
-	ALBEDO    = vec3(brightness, brightness * 0.99, brightness * 0.97);
-	ALPHA     = alpha;
-	ROUGHNESS = 1.0;
-	METALLIC  = 0.0;
-}
-";
 
 	// ── Grid sphere shader (pure UV math — no texture, always on top) ──────────
 
@@ -1173,8 +1573,14 @@ void fragment() {
 shader_type spatial;
 render_mode cull_back, blend_add, unshaded, depth_draw_never, depth_test_disabled;
 
-uniform int selected_gi = -1;
-uniform int selected_gj = -1;
+uniform int  selected_gi   = -1;
+uniform int  selected_gj   = -1;
+uniform bool lines_enabled = true;
+
+// Landing site candidates — shown in amber/gold
+uniform int cand0_gi = -1; uniform int cand0_gj = -1;
+uniform int cand1_gi = -1; uniform int cand1_gj = -1;
+uniform int cand2_gi = -1; uniform int cand2_gj = -1;
 
 void fragment() {
 	float fu = fract(UV.x * 24.0);
@@ -1182,29 +1588,46 @@ void fragment() {
 	int   ci = int(UV.x * 24.0);
 	int   cj = int(UV.y * 12.0);
 
-	bool in_sel = (selected_gi >= 0) && (ci == selected_gi) && (cj == selected_gj);
+	bool in_sel  = (selected_gi >= 0) && (ci == selected_gi) && (cj == selected_gj);
+	bool in_cand = (!in_sel) && (
+		(cand0_gi >= 0 && ci == cand0_gi && cj == cand0_gj) ||
+		(cand1_gi >= 0 && ci == cand1_gi && cj == cand1_gj) ||
+		(cand2_gi >= 0 && ci == cand2_gi && cj == cand2_gj));
 
-	// Regular grid lines — suppressed on the selected cell
+	// Regular grid lines — only when enabled and outside highlighted cells
 	float line = 0.0;
-	if (!in_sel) {
+	if (lines_enabled && !in_sel && !in_cand) {
 		line = clamp(
 			step(fu, 0.018) + step(0.982, fu) +
 			step(fv, 0.025) + step(0.975, fv), 0.0, 1.0);
 	}
 
-	// Selected cell: soft cyan glow band — wider band with falloff, matches slab rim
+	// Selected cell: soft cyan glow band
 	float glow = 0.0;
 	if (in_sel) {
 		float bw  = 0.12;
 		float eu  = min(fu, 1.0 - fu) / bw;
 		float ev  = min(fv, 1.0 - fv) / bw;
-		float rim = 1.0 - clamp(min(eu, ev), 0.0, 1.0);  // 1 at edge, 0 inside
+		float rim = 1.0 - clamp(min(eu, ev), 0.0, 1.0);
 		float pulse = 0.80 + sin(TIME * 2.2) * 0.20;
 		glow = pow(rim, 1.5) * pulse;
 	}
 
-	EMISSION = vec3(0.85, 0.90, 0.95) * line + vec3(0.10, 0.70, 1.00) * glow;
-	ALPHA    = max(line * 0.85, glow * 0.80);
+	// Candidate cells: amber/gold glow border — slower pulse
+	float cand_glow = 0.0;
+	if (in_cand) {
+		float bw  = 0.10;
+		float eu  = min(fu, 1.0 - fu) / bw;
+		float ev  = min(fv, 1.0 - fv) / bw;
+		float rim = 1.0 - clamp(min(eu, ev), 0.0, 1.0);
+		float pulse = 0.75 + sin(TIME * 1.4) * 0.25;
+		cand_glow = pow(rim, 1.4) * pulse;
+	}
+
+	EMISSION = vec3(0.85, 0.90, 0.95) * line
+	         + vec3(0.10, 0.70, 1.00) * glow
+	         + vec3(1.00, 0.72, 0.08) * cand_glow;
+	ALPHA    = max(max(line * 0.85, glow * 0.80), cand_glow * 0.85);
 }
 ";
 

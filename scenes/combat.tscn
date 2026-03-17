@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://combat_scene_fp"]
+
+[ext_resource type="Script" path="res://scripts/combat/CombatManager.cs" id="1_combatmgr"]
+
+[node name="CombatScene" type="Node2D"]
+script = ExtResource("1_combatmgr")

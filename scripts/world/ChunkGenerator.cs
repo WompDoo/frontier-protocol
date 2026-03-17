@@ -129,9 +129,10 @@ public static class ChunkGenerator
 
 	// ── Chunk tile generation ─────────────────────────────────────────────────
 
-	public static ChunkData Generate(Vector2I coord, int worldSeed, PlanetParams planet)
+	public static ChunkData Generate(Vector2I coord, int worldSeed, PlanetParams planet,
+	                                  BiomeType? biomeOverride = null)
 	{
-		BiomeType biome = GetBiome(coord, worldSeed, planet);
+		BiomeType biome = biomeOverride ?? GetBiome(coord, worldSeed, planet);
 		var tiles = new TileType[ChunkData.Size, ChunkData.Size];
 
 		// World-space noise — same seed for every chunk so noise is continuous

@@ -58,6 +58,17 @@ public enum BiomeType
 	Arctic,
 }
 
+/// <summary>
+/// Per-chunk river crossing derived from globe-level river tracing.
+/// Sides: 0=North, 1=East, 2=South, 3=West.
+/// EntrySide = -1 means river originates here (spring/glacial source).
+/// </summary>
+public struct RiverCrossing
+{
+	public int EntrySide;  // -1 = spring source; 0=N, 1=E, 2=S, 3=W
+	public int ExitSide;   // 0=N, 1=E, 2=S, 3=W
+}
+
 public class ChunkData
 {
 	public const int Size = 16; // 16x16 tiles per chunk

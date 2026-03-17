@@ -1,5 +1,6 @@
 [gd_scene format=3 uid="uid://dx0ei480c63ev"]
 
+[ext_resource type="Script" path="res://scripts/world/WorldScene.cs" id="0_worldscene"]
 [ext_resource type="Script" path="res://scripts/player/Player.cs" id="1_player"]
 [ext_resource type="Script" path="res://scripts/world/ChunkManager.cs" id="2_chunks"]
 [ext_resource type="Script" path="res://scripts/ui/DebugHUD.cs" id="3_debughud"]
@@ -11,6 +12,7 @@
 radius = 10.0
 
 [node name="World" type="Node2D"]
+script = ExtResource("0_worldscene")
 
 [node name="SpaceLayer" type="CanvasLayer" parent="."]
 layer = -10

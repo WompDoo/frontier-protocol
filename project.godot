@@ -15,14 +15,17 @@ run/main_scene="uid://dx0ei480c63ev"
 config/features=PackedStringArray("4.6", "C#", "Forward Plus")
 config/icon="res://icon.svg"
 
+[autoload]
+
+MCPGameBridge="res://addons/godot_mcp/game_bridge/mcp_game_bridge.gd"
+GameManager="*res://scripts/GameManager.cs"
+PartyManager="*res://scripts/combat/PartyManager.cs"
+CellDatabase="*res://scripts/world/CellDatabase.cs"
+
 [display]
 
 window/size/viewport_width=1920
 window/size/viewport_height=1080
-
-[autoload]
-
-MCPGameBridge="res://addons/godot_mcp/game_bridge/mcp_game_bridge.gd"
 
 [dotnet]
 

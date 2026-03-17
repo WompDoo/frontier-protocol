@@ -1,25 +1,71 @@
 using Godot;
+using System;
 using System.Collections.Generic;
 
 /// <summary>
 /// Manages chunk loading/unloading around the player.
 /// Generates a 5×5 window of chunks centred on the player's current chunk.
+/// Chunk generation is spread across frames (LoadPerFrame per frame) to avoid
+/// the deploy-time freeze: the player's own chunk loads immediately, neighbours stream in.
 /// </summary>
 public partial class ChunkManager : Node2D
 {
-	private const int LoadRadius = 2;
+	private const int LoadRadius   = 2;
+	private const int LoadPerFrame = 3;  // max chunks generated per frame while streaming
+
+	// ── Run area ──────────────────────────────────────────────────────────────
+	// The run area is a 9×9 chunk grid centered on the deploy chunk.
+	// Outer 2 rings (Chebyshev dist 3–4) generate as impassable barrier terrain.
+	// Chunks beyond dist 4 are not loaded at all (black void).
+	private const int RunHalfSize  = 4;  // ±4 → 9×9 total area
+	private const int BarrierStart = 3;  // dist ≥ 3 from center = barrier ring (2 chunks wide)
+
+	private Vector2I? _runCenter;  // null = no boundary (globe/debug mode)
+
+	/// <summary>
+	/// Set the run area center. All subsequent chunk loading will be bounded
+	/// to a 9×9 area, with the outer 2-chunk ring generating as barrier terrain.
+	/// </summary>
+	public void SetRunArea(Vector2I centerChunk)
+	{
+		if (_runCenter == centerChunk) return;
+		_runCenter = centerChunk;
+		// Force a full reload so any previously loaded out-of-bounds chunks are cleared
+		_lastPlayerChunk = new(int.MinValue, int.MinValue);
+	}
+
+	/// <summary>Clear run area bounds (use in globe/unlimited mode).</summary>
+	public void ClearRunArea()
+	{
+		_runCenter = null;
+		_lastPlayerChunk = new(int.MinValue, int.MinValue);
+	}
 
 	[Export] public int      WorldSeed  { get; set; } = 0;
 	[Export] public NodePath PlayerPath { get; set; }
 
-	private Node2D                          _player;
-	private ChunkGenerator.PlanetParams     _planet;
-	private readonly Dictionary<Vector2I, Chunk> _chunks = new();
+	private Node2D                               _player;
+	private ChunkGenerator.PlanetParams          _planet;
+	private readonly Dictionary<Vector2I, Chunk> _chunks    = new();
+	private readonly Queue<Vector2I>             _loadQueue = new();
 	private Vector2I _lastPlayerChunk = new(int.MinValue, int.MinValue);
 
 	public int                          Seed          => WorldSeed;
 	public ChunkGenerator.PlanetParams  Planet        => _planet;
 	public float                        WaterFraction { get; set; }   // set by GlobeView after texture gen
+
+	/// <summary>
+	/// Optional callback set by WorldScene. Given a chunk coordinate, returns the globe's
+	/// dominant biome for that area — used to override ChunkGenerator's independent noise so
+	/// the overworld matches what the globe view shows.
+	/// </summary>
+	public Func<Vector2I, BiomeType?>?    BiomeLookup  { get; set; }
+
+	/// <summary>
+	/// Optional callback set by WorldScene. Returns globe-traced river crossing data for
+	/// a chunk, or null if no river passes through it.
+	/// </summary>
+	public Func<Vector2I, RiverCrossing?>? RiverLookup { get; set; }
 
 	public override void _Ready()
 	{
@@ -50,15 +96,30 @@ public partial class ChunkManager : Node2D
 	{
 		if (_player is null) return;
 		var chunkCoord = WorldToChunk(_player.Position);
-		if (chunkCoord == _lastPlayerChunk) return;
-		_lastPlayerChunk = chunkCoord;
-		UpdateChunks(chunkCoord);
+		if (chunkCoord != _lastPlayerChunk)
+		{
+			_lastPlayerChunk = chunkCoord;
+			UpdateChunks(chunkCoord);
+		}
+
+		// Drain the load queue — spreads generation across frames to prevent freezes
+		int loaded = 0;
+		while (_loadQueue.Count > 0 && loaded < LoadPerFrame)
+		{
+			var coord = _loadQueue.Dequeue();
+			if (!_chunks.ContainsKey(coord))
+			{
+				LoadChunk(coord);
+				loaded++;
+			}
+		}
 	}
 
 	// ── Chunk lifecycle ───────────────────────────────────────────────────────
 
 	public void Regenerate()
 	{
+		_loadQueue.Clear();
 		foreach (var chunk in _chunks.Values)
 			chunk.QueueFree();
 		_chunks.Clear();
@@ -105,37 +166,63 @@ public partial class ChunkManager : Node2D
 
 	private void UpdateChunks(Vector2I centre)
 	{
-		var needed = new HashSet<Vector2I>();
+		var needed = new HashSet<Vector2I>(25);  // 5×5 window
 		for (int dx = -LoadRadius; dx <= LoadRadius; dx++)
 			for (int dy = -LoadRadius; dy <= LoadRadius; dy++)
 			{
-				// X is raw (unbounded) — longitude wraps via ChunkGenerator.NormX internally.
-				// Y is clamped so we never load chunks beyond the poles.
-				int rawY  = Mathf.Clamp(centre.Y + dy, ChunkGenerator.LatMin, ChunkGenerator.LatMax);
-				needed.Add(new Vector2I(centre.X + dx, rawY));
+				var coord = new Vector2I(centre.X + dx,
+				                        Mathf.Clamp(centre.Y + dy, ChunkGenerator.LatMin, ChunkGenerator.LatMax));
+
+				// When a run area is active, only load chunks within the 9×9 boundary
+				if (_runCenter.HasValue)
+				{
+					var d    = coord - _runCenter.Value;
+					int dist = Math.Max(Math.Abs(d.X), Math.Abs(d.Y));
+					if (dist > RunHalfSize) continue;
+				}
+
+				needed.Add(coord);
 			}
 
-		var remove = new List<Vector2I>();
+		// Unload out-of-range chunks
+		var remove = new List<Vector2I>(8);
 		foreach (var coord in _chunks.Keys)
 			if (!needed.Contains(coord)) remove.Add(coord);
-
 		foreach (var coord in remove)
 		{
 			_chunks[coord].QueueFree();
 			_chunks.Remove(coord);
 		}
 
+		// Load player's own chunk immediately — no blank tile under their feet
+		if (!_chunks.ContainsKey(centre))
+			LoadChunk(centre);
+
+		// Queue the rest for streaming across subsequent frames
+		_loadQueue.Clear();
 		foreach (var coord in needed)
 			if (!_chunks.ContainsKey(coord))
-				LoadChunk(coord);
+				_loadQueue.Enqueue(coord);
 	}
 
 	private void LoadChunk(Vector2I coord)
 	{
-		var data  = ChunkGenerator.Generate(coord, WorldSeed, _planet);
+		BiomeType? globeBiome = BiomeLookup?.Invoke(coord);
+
+		// Barrier ring: outer 2 chunks of the run area generate as impassable mountain terrain
+		if (_runCenter.HasValue)
+		{
+			var d    = coord - _runCenter.Value;
+			int dist = Math.Max(Math.Abs(d.X), Math.Abs(d.Y));
+			if (dist >= BarrierStart)
+				globeBiome = BiomeType.Mountain;
+		}
+
+		var data  = ChunkGenerator.Generate(coord, WorldSeed, _planet, globeBiome);
+		RiverCrossing? river = RiverLookup?.Invoke(coord);
 		var chunk = new Chunk();
 		AddChild(chunk);
-		chunk.Init(data, ChunkToWorld(coord));
+		chunk.Init(data, ChunkToWorld(coord), WorldSeed, river, _planet.SeaLevel);
 		_chunks[coord] = chunk;
 	}
 
