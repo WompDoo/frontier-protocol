@@ -26,11 +26,12 @@ public partial class WorldScene : Node2D
 
 	// ── Node refs ─────────────────────────────────────────────────────────
 
-	private CanvasLayer  _globeLayer    = null!;
-	private GlobeView    _globeView     = null!;
-	private ChunkManager _chunkManager  = null!;
-	private Node2D       _ySort         = null!;
-	private Player       _player        = null!;
+	private CanvasLayer       _globeLayer    = null!;
+	private GlobeView         _globeView     = null!;
+	private ChunkManager      _chunkManager  = null!;
+	private Node2D            _ySort         = null!;
+	private Player            _player        = null!;
+	private OverworldRenderer? _overworld    = null;
 
 	// ── Encounter state ───────────────────────────────────────────────────
 
@@ -48,14 +49,17 @@ public partial class WorldScene : Node2D
 		_ySort        = GetNode<Node2D>("YSort");
 		_player       = GetNode<Player>("YSort/Player");
 
+		_overworld = GetNodeOrNull<OverworldRenderer>("OverworldRenderer");
+
 		_globeView.DeployRequested    += OnDeployRequested;
 		_globeView.LandingSiteChosen  += OnLandingSiteChosen;
 		_chunkManager.BiomeLookup      = coord => _globeView.GetBiomeForChunk(coord.X, coord.Y);
 		_chunkManager.RiverLookup      = coord => _globeView.GetRiverCrossing(coord.X, coord.Y);
 
-		// Globe grid → chunk coord: center of each cell (gi*10+5, gj*10-45)
+		// Globe grid → chunk coord: cell centre = gj*10 + LatMin + 5 = gj*10 - 55
+		// LatMin=-60, 12 cells × 10 chunks each → gj=0 centre Y=-55, gj=6 centre Y=5, gj=11 centre Y=55
 		CellDatabase.Instance.BiomeLookup = (gi, gj) =>
-			_globeView.GetBiomeForChunk(gi * 10 + 5, Math.Clamp(gj * 10 - 45, -60, 59));
+			_globeView.GetBiomeForChunk(gi * 10 + 5, Math.Clamp(gj * 10 - 55, -60, 59));
 
 		CellDatabase.Instance.InitPlanet(_chunkManager.WorldSeed);
 
@@ -109,6 +113,7 @@ public partial class WorldScene : Node2D
 		_globeLayer.Visible   = true;
 		_chunkManager.Visible = false;
 		_ySort.Visible        = false;
+		if (_overworld != null) _overworld.SetActive(false);
 		_chunkManager.ClearRunArea();
 		_lastChunk = new(int.MinValue, int.MinValue);
 	}
@@ -123,6 +128,7 @@ public partial class WorldScene : Node2D
 		_globeLayer.Visible   = false;
 		_chunkManager.Visible = true;
 		_ySort.Visible        = true;
+		if (_overworld != null) _overworld.SetActive(true);
 
 		_chunkManager.SetRunArea(chunkCoord);
 
@@ -137,7 +143,7 @@ public partial class WorldScene : Node2D
 	{
 		// Mark cell as the home base in CellDatabase (sample biome at cell centre)
 		BiomeType biome = _globeView.GetBiomeForChunk(lonIdx * 10 + 5,
-		                      Math.Clamp(latIdx * 10 - 45, -60, 59))
+		                      Math.Clamp(latIdx * 10 - 55, -60, 59))
 		                  ?? BiomeType.Grassland;
 
 		var rec = CellDatabase.Instance.GetOrCreate(lonIdx, latIdx, biome);
@@ -155,7 +161,7 @@ public partial class WorldScene : Node2D
 		// Cell centre: X = gi*10+5, Y = gj*10-45  (not -50 which is the northern edge)
 		// gj=0→Y=-45 (near north pole), gj=5→Y=5 (equator+), gj=11→Y=65→clamped 59
 		int chunkX = lonIdx * 10 + 5;
-		int chunkY = Math.Clamp(latIdx * 10 - 45, -60, 59);
+		int chunkY = Math.Clamp(latIdx * 10 - 55, -60, 59);
 		EnterIso(new Vector2I(chunkX, chunkY), teleport: true);
 	}
 

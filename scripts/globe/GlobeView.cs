@@ -823,7 +823,7 @@ public partial class GlobeView : Node2D
 
 			// Also verify the actual centre chunk is land (globe dominant biome can straddle coasts)
 			int cx = gi * 10 + 5;
-			int cy = Mathf.Clamp(gj * 10 - 45, -60, 59);
+			int cy = Mathf.Clamp(gj * 10 - 55, -60, 59);
 			var actual = GetBiomeForChunk(cx, cy);
 			if (actual is BiomeType.Ocean or BiomeType.DeepOcean or BiomeType.Coastal)
 				continue;
@@ -1178,8 +1178,9 @@ public partial class GlobeView : Node2D
 	public BiomeType? GetBiomeForChunk(int chunkX, int chunkY)
 	{
 		if (!_gridReady) return null;
-		return ChunkGenerator.GetBiome(
-			new Vector2I(chunkX, chunkY), _chunkManager.Seed, _chunkManager.Planet);
+		int gi = Mathf.Clamp(ChunkGenerator.NormX(chunkX) / 10, 0, GridDivLon - 1);
+		int gj = Mathf.Clamp((chunkY + 55) / 10,               0, GridDivLat - 1);
+		return _gridData[gi, gj].DominantBiome;
 	}
 
 	// ── River tracing ─────────────────────────────────────────────────────────

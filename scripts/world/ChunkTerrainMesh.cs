@@ -27,16 +27,16 @@ public partial class ChunkTerrainMesh : Node2D
 	private const int   NVerts     = NTiles + 1;             // 33 vertices per axis
 
 	private const float TW  = 64f;   // tile pixel width  (matches Chunk.TileWidth)
-	private const float TH  = 32f;   // tile pixel height (matches Chunk.TileHeight)
+	private const float TH  = 48f;   // tile pixel height (matches Chunk.TileHeight)
 	private const float HTW = TW * 0.5f;   // 32
-	private const float HTH = TH * 0.5f;   // 16
+	private const float HTH = TH * 0.5f;   // 24
 
 	// ── Height parameters ──────────────────────────────────────────────────
 	// NormAmp is the denominator for HeightColor normalisation.
 	// TileBaseH max (Snow=72) + NoiseAmp (20) + GlobeMacroAmp (30) = 122 → 122 so Snow at
 	// high elevation still maps to ~0.82, and extreme peaks can reach 1.0.
-	private const float NormAmp       = 122f;
-	private const float NoiseAmp      = 20f;   // FBM noise added on top of TileBaseH
+	private const float NormAmp       = 130f;
+	private const float NoiseAmp      = 28f;   // FBM noise added on top of TileBaseH
 	private const float GlobeMacroAmp = 30f;   // globe elevation macro bias amplitude
 
 	// Water constants
@@ -272,10 +272,10 @@ public partial class ChunkTerrainMesh : Node2D
 		      hS = _vH[c + 1, r + 1], hW = _vH[c, r + 1];
 		float avgH = (hN + hE + hS + hW) * 0.25f;
 
-		Color fill = HeightColor(avgH / NormAmp);
+		bool isWater = avgH < WaterThreshold;
+		Color fill = isWater ? HeightColor(avgH / NormAmp) : TileFillColor(_wTile[c, r]);
 		Color col;
 
-		bool isWater = avgH < WaterThreshold;
 		if (isWater)
 		{
 			float depthT = Mathf.Clamp(avgH / WaterThreshold, 0f, 1f);
@@ -287,9 +287,9 @@ public partial class ChunkTerrainMesh : Node2D
 		{
 			float slopeU = (hE + hS) * 0.5f - (hN + hW) * 0.5f;
 			float slopeV = (hW + hS) * 0.5f - (hN + hE) * 0.5f;
-			float lf     = Mathf.Clamp(1.0f + (-slopeU - slopeV) * 0.014f, 0.58f, 1.48f);
+			float lf     = Mathf.Clamp(1.0f + (-slopeU - slopeV) * 0.011f, 0.62f, 1.42f);
 			float hsh    = MathF.Abs(MathF.Sin(c * 127.1f + r * 311.7f));
-			float vary   = (hsh - 0.5f) * 0.06f;
+			float vary   = (hsh - 0.5f) * 0.08f;
 			col = Bright(fill, lf + vary);
 		}
 
@@ -365,20 +365,20 @@ public partial class ChunkTerrainMesh : Node2D
 
 		TileType wt      = _wTile[c, r];
 		int      pSeed   = c * 37 + r * 13;
-		float    dBase   = 0.87f - _profile.ForestDensity * 0.50f;
+		float    dBase   = 0.70f - _profile.ForestDensity * 0.65f;
 		float    den     = _fDen[c, r];
 
 		// Beach / shore: sparse rocks only
 		if (avgH < 14f)
 		{
 			if ((pSeed & 15) == 0)
-				PropDraw.DrawProp(this, TileType.Rocky, centre, pSeed, 0.40f);
+				PropDraw.DrawProp(this, TileType.Rocky, centre, pSeed, 0.50f);
 			return;
 		}
 
 		// Land: PropDraw driven by world tile type + density noise
 		if (den > dBase - 0.05f)
-			PropDraw.DrawProp(this, wt, centre, pSeed, 0.55f);
+			PropDraw.DrawProp(this, wt, centre, pSeed, 0.90f);
 	}
 
 	// ── Water feature carving ──────────────────────────────────────────────
@@ -601,6 +601,30 @@ public partial class ChunkTerrainMesh : Node2D
 	private Vector2 Vtx(int u, int v) => new(VtxX(u, v), VtxY(u, v));
 
 	// ── Colour helpers ─────────────────────────────────────────────────────
+
+	// Per-tile flat colour — same palette as CombatTerrain for visual consistency.
+	// Water tiles still use the height gradient (depth-based), but all land tiles
+	// get their biome colour directly from TileType so colours are vibrant + unambiguous.
+	private static Color TileFillColor(TileType t) => t switch
+	{
+		TileType.DeepOcean                    => new Color(0.02f, 0.06f, 0.28f),
+		TileType.Ocean                        => new Color(0.04f, 0.18f, 0.52f),
+		TileType.ShallowWater                 => new Color(0.14f, 0.48f, 0.74f),
+		TileType.Beach                        => new Color(0.88f, 0.80f, 0.52f),
+		TileType.MudFlat                      => new Color(0.30f, 0.24f, 0.16f),
+		TileType.Desert                       => new Color(0.90f, 0.70f, 0.28f),
+		TileType.Savanna                      => new Color(0.70f, 0.62f, 0.22f),
+		TileType.Grassland or TileType.Ground => new Color(0.22f, 0.62f, 0.14f),
+		TileType.Forest                       => new Color(0.10f, 0.38f, 0.11f),
+		TileType.DenseForest                  => new Color(0.06f, 0.24f, 0.08f),
+		TileType.AlienGrowth                  => new Color(0.06f, 0.36f, 0.28f),
+		TileType.Rocky                        => new Color(0.50f, 0.42f, 0.32f),
+		TileType.Mountain                     => new Color(0.56f, 0.52f, 0.48f),
+		TileType.Snow                         => new Color(0.92f, 0.96f, 1.00f),
+		TileType.Crystal                      => new Color(0.58f, 0.10f, 0.92f),
+		TileType.Ruins                        => new Color(0.48f, 0.40f, 0.26f),
+		_                                     => new Color(0.22f, 0.62f, 0.14f),
+	};
 
 	// 8-stop height-colour gradient cached as static readonly — zero allocation per call.
 	private static readonly float[] HeightColorStops =

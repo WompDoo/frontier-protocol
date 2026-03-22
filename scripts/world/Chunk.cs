@@ -9,12 +9,13 @@ using System;
 public partial class Chunk : Node2D
 {
 	public const int TileWidth  = 64;
-	public const int TileHeight = 32;
+	public const int TileHeight = 48;   // steeper isometric angle (~48° from horizontal)
 
-	public static bool DebugBorders = false;
+	public static bool DebugBorders      = false;
+	public static bool UseThreeDRenderer = false;  // set by ChunkManager when OverworldRenderer is present
 
 	private ChunkData         _data;
-	private ChunkTerrainMesh  _terrain;
+	private ChunkTerrainMesh? _terrain;
 
 	public ChunkData Data => _data;
 
@@ -23,9 +24,12 @@ public partial class Chunk : Node2D
 		_data    = data;
 		Position = worldPos;
 
-		_terrain = new ChunkTerrainMesh();
-		AddChild(_terrain);
-		_terrain.GenerateFromChunk(data, worldSeed, seaLevel, river);
+		if (!UseThreeDRenderer)
+		{
+			_terrain = new ChunkTerrainMesh();
+			AddChild(_terrain);
+			_terrain.GenerateFromChunk(data, worldSeed, seaLevel, river);
+		}
 
 		QueueRedraw();
 	}

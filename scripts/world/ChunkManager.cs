@@ -49,6 +49,7 @@ public partial class ChunkManager : Node2D
 	private readonly Dictionary<Vector2I, Chunk> _chunks    = new();
 	private readonly Queue<Vector2I>             _loadQueue = new();
 	private Vector2I _lastPlayerChunk = new(int.MinValue, int.MinValue);
+	private OverworldRenderer?                   _overworld;
 
 	public int                          Seed          => WorldSeed;
 	public ChunkGenerator.PlanetParams  Planet        => _planet;
@@ -70,6 +71,14 @@ public partial class ChunkManager : Node2D
 	public override void _Ready()
 	{
 		_player = GetNode<Node2D>(PlayerPath);
+
+		// Find optional OverworldRenderer sibling — enables 3D terrain mode
+		_overworld = GetParent().GetNodeOrNull<OverworldRenderer>("OverworldRenderer");
+		if (_overworld is not null)
+		{
+			Chunk.UseThreeDRenderer = true;
+			GD.Print("[World] OverworldRenderer found — using 3D terrain mode");
+		}
 
 		if (WorldSeed == 0)
 			WorldSeed = (int)GD.Randi();
@@ -100,6 +109,7 @@ public partial class ChunkManager : Node2D
 		{
 			_lastPlayerChunk = chunkCoord;
 			UpdateChunks(chunkCoord);
+			ApplyAtmosphericPerspective(chunkCoord);
 		}
 
 		// Drain the load queue — spreads generation across frames to prevent freezes
@@ -123,6 +133,7 @@ public partial class ChunkManager : Node2D
 		foreach (var chunk in _chunks.Values)
 			chunk.QueueFree();
 		_chunks.Clear();
+		_overworld?.ClearAll();
 
 		WorldSeed = (int)GD.Randi();
 		_planet   = ChunkGenerator.DeriveParams(WorldSeed);
@@ -192,6 +203,7 @@ public partial class ChunkManager : Node2D
 		{
 			_chunks[coord].QueueFree();
 			_chunks.Remove(coord);
+			_overworld?.RemoveChunk(coord);
 		}
 
 		// Load player's own chunk immediately — no blank tile under their feet
@@ -203,6 +215,23 @@ public partial class ChunkManager : Node2D
 		foreach (var coord in needed)
 			if (!_chunks.ContainsKey(coord))
 				_loadQueue.Enqueue(coord);
+	}
+
+	/// <summary>
+	/// Darkens chunks that are far from the player to simulate atmospheric perspective —
+	/// terrain "falls away" toward the horizon like on a curved planet surface.
+	/// Centre chunk = full brightness; edge chunks = 65% brightness.
+	/// </summary>
+	private void ApplyAtmosphericPerspective(Vector2I centre)
+	{
+		foreach (var (coord, chunk) in _chunks)
+		{
+			int dist = Mathf.Max(Mathf.Abs(coord.X - centre.X),
+			                     Mathf.Abs(coord.Y - centre.Y));
+			float t    = Mathf.Clamp(dist / (float)LoadRadius, 0f, 1f);
+			float bright = Mathf.Lerp(1.0f, 0.55f, t * t);  // quadratic falloff
+			chunk.Modulate = new Color(bright, bright, bright, 1f);
+		}
 	}
 
 	private void LoadChunk(Vector2I coord)
@@ -224,6 +253,7 @@ public partial class ChunkManager : Node2D
 		AddChild(chunk);
 		chunk.Init(data, ChunkToWorld(coord), WorldSeed, river, _planet.SeaLevel);
 		_chunks[coord] = chunk;
+		_overworld?.AddChunk(coord, data, WorldSeed, _planet.SeaLevel, river);
 	}
 
 	// ── Coordinate conversion ─────────────────────────────────────────────────

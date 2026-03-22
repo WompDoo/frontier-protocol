@@ -264,3 +264,94 @@ Root cause: deploy formula used `gj * 10 - 50` which is the **northern edge** of
 - Biome-wide color pass (all tiles in same biome should share a color family)
 - Re-enable combat FSM after terrain is satisfactory
 - Vignetting as separate CanvasLayer
+
+---
+
+### 2026-03-17 — Overworld design rethink
+
+#### Core architecture decision: 2 spaces, not 3
+The current "3 zoom levels" model (Globe → Overworld → Combat arena) is a design flaw.
+Correct mental model: **2 spaces.**
+- **Globe** — strategic/meta layer. Choose where to deploy, read terrain, plan.
+- **Ground** — everything else. The overworld *is* the run. Combat happens on the same tile/terrain, just shifts to a playable arena view. Logically the same place.
+
+#### Globe ↔ Overworld connection problem
+Right now they feel like 2 different games with no visual or tonal link. The grid selection feeding data to the overworld is invisible to a new player. **Priority: tighten these together graphically and by feel before any further overworld work.**
+
+#### What the overworld actually is
+The overworld is the primary gameplay space — where most of the run happens. Not a lobby for combat.
+
+Activities that happen organically while exploring:
+- Codex entries: fauna & flora discoveries
+- Secrets, ruins, unusual terrain features
+- Resource collection
+- Combat encounters (ambushes, territorial creatures, enemy scouts)
+- Events (extraordinary finds, environmental hazards, NPC encounters)
+
+Design intent: the player should *never be waiting*. Things happen as they move. No holding screen, no scheduled random-roll-then-combat. It should feel like the terrain is alive.
+
+#### Full run structure (2026-03-17 draft)
+```
+Choose deployment cell (globe)
+  → Choose scouts
+    → Choose gear
+      → Deploy
+        → Immediate engagement — player has a clear first read on the terrain
+          → Organic exploration loop:
+               move → encounter something (event / codex / loot / combat / secret)
+               → resolve it → keep moving
+          → Reach goal (or stumble onto it)
+            → Option A: exfil → run breakdown → base/factory loop → repeat
+            → Option B: stay, explore more
+          → Fail state: KO/forced exfil
+            → Run breakdown → deal with losses → base/factory → repeat
+```
+
+Two mission flavors (both procedural, both valid):
+- **Open world**: multiple things to tackle, player chooses order and depth
+- **Directed goal**: one primary objective, side content en route
+
+#### Globe ↔ Overworld visual consistency (no zoom needed)
+Aesthetic match is the goal — not a literal zoom animation. When a player deploys on a cell showing a mountain, there should be a mountain. Rivers, lakes, forests — what the globe shows is what the ground delivers. The two layers speak the same visual language.
+
+This means:
+- Overworld terrain color palette must derive from the same biome signal the globe uses (not independent noise coloring)
+- Elevation that produces mountain-shading on the globe → actual high-ground in the overworld tile
+- River traces on the globe → actual river in the chunk
+- Already partially wired (BiomeLookup + RiverLookup callbacks) but visually disconnected
+
+#### Dynamic globe — world events visible from space
+The globe is NOT static. World events that happen on the ground should be visible from orbit.
+
+Examples:
+- Forest fire → smoke/orange glow visible on the globe over that cell
+- Large explosion → visible flash
+- Alien creep spreading across the plains → dark spreading overlay on the globe
+- Base expansion → structure signature visible from space (metal/grey footprint growing)
+- A crashed ship → distinctive mark on the surface
+
+Architecture implications:
+- Globe texture needs a **dynamic event layer** on top of the base noise-generated texture
+- Need a `WorldEventManager` (or similar) that registers events at world/chunk coordinates
+- Globe rendering reads active events and overlays them per-pixel (chunk coords → globe pixel coords)
+- Events can be: transient (fire, explosion), persistent (base, wreckage), spreading (alien creep)
+- Base persistence question: do globe events persist between runs? (Probably yes for base/wreckage, no for transient)
+
+This system makes the globe feel like a command satellite view — intelligence, not decoration.
+
+#### Camera / perspective reference
+Wasteland 3 is the reference for overworld and combat camera distance. Key qualities:
+- Close enough to read individual characters and terrain detail
+- Strong sense of height/elevation (terrain feels 3D, not flat)
+- Props (trees, structures) feel large and imposing relative to the ground
+- Roughly 35–45° angle from vertical — not straight-down overhead
+- Not 3D — 2D isometric, but with great height simulation and dense props
+
+#### Priority order going forward
+1. **Coordinate fix** — globe cell → correct overworld chunk (Highland shows Forest right now, broken)
+2. **Aesthetic consistency** — overworld terrain visually matches the globe biome at that cell
+3. Overworld terrain generation (rebuild from scratch: shapes → water → props)
+4. Dynamic globe event layer (architect early so it's not bolted on later)
+5. Overworld content layer (events, codex, loot, objectives)
+6. Combat arena (simpler, more focused — tackle after ground loop is solid)
+

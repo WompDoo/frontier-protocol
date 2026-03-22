@@ -10,12 +10,12 @@ public partial class Player : CharacterBody2D
 	private const float ZoomSmooth = 12f;   // lerp speed toward target zoom
 
 	private Camera2D _camera;
-	private float    _zoomTarget = 2.5f;    // matches Camera2D initial zoom in scene
+	private float    _zoomTarget = 3.0f;    // starting zoom — 3× gives ~10-tile viewport width
 
 	public override void _Ready()
 	{
-		_camera      = GetNode<Camera2D>("Camera2D");
-		_zoomTarget  = _camera.Zoom.X;
+		_camera     = GetNode<Camera2D>("Camera2D");
+		_camera.Zoom = Vector2.One * _zoomTarget;
 	}
 
 	public override void _Input(InputEvent @event)
